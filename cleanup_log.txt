@@ -1,0 +1,25 @@
+Sitemap Cleanup Log
+Input file: sitemap_fixed.xml
+Output file: sitemap_cleaned.xml
+Removed URLs:
+- https://www.nitt.edu/academics/departments/events
+- https://www.nitt.edu/academics/departments/facilities
+- https://www.nitt.edu/academics/departments/faculty
+- https://www.nitt.edu/academics/departments/placements
+- https://www.nitt.edu/academics/departments/projects
+- https://www.nitt.edu/academics/departments/publications
+- https://www.nitt.edu/academics/departments/students
+- https://www.nitt.edu/academics/departments/supporting_staff
+- https://www.nitt.edu/home/academics/departments/events
+- https://www.nitt.edu/home/academics/departments/facilities
+- https://www.nitt.edu/home/academics/departments/faculty
+- https://www.nitt.edu/home/academics/departments/placements
+- https://www.nitt.edu/home/academics/departments/projects
+- https://www.nitt.edu/home/academics/departments/publications
+- https://www.nitt.edu/home/academics/departments/students
+- https://www.nitt.edu/home/academics/departments/supporting_staff
+- https://www.nitt.edu/home/convocation
+- https://www.nitt.edu/home/students/convocation
+- https://www.nitt.edu/home/students/facilitiesnservices/services
+- https://www.nitt.edu/home/students/facilitiesnservices/staff
+Total removed: 20
