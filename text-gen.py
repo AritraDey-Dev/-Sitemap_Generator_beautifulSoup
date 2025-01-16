@@ -1,111 +1,195 @@
 import requests
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
-import fitz  
+import fitz  # PyMuPDF
+import re
 from tabulate import tabulate
+import pdfplumber
+import logging
+from concurrent.futures import ThreadPoolExecutor
+
+# Create a logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Create a file handler and a stream handler
+file_handler = logging.FileHandler('scrape.log')
+stream_handler = logging.StreamHandler()
+
+# Create a formatter and add it to the handlers
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+stream_handler.setFormatter(formatter)
+
+# Add the handlers to the logger
+logger.addHandler(file_handler)
+logger.addHandler(stream_handler)
 
 def parse_sitemap(sitemap_file):
-    with open(sitemap_file, "r") as file:
-        sitemap_content = file.read()
+    try:
+        with open(sitemap_file, "r", encoding="utf-8") as file:
+            sitemap_content = file.read()
 
-    root = ET.fromstring(sitemap_content)
-    urls = [url.text for url in root.iter("{http://www.sitemaps.org/schemas/sitemap/0.9}loc")]
-    return urls
-
-def convert_pdf_to_markdown(pdf_url):
-    response = requests.get(pdf_url)
-    if response.status_code != 200:
-        print(f"Failed to download PDF from {pdf_url}")
-        return ""
-
-    pdf_doc = fitz.open(stream=response.content, filetype="pdf")
-    markdown_content = ""
-
-    for page_num in range(pdf_doc.page_count):
-        page = pdf_doc.load_page(page_num)
-        markdown_content += f"## Page {page_num + 1}\n\n"
-        markdown_content += page.get_text("text") + "\n\n"
-
-    return markdown_content
-
-def scrape_page(url):
-    response = requests.get(url)
-    content_type = response.headers.get("Content-Type", "")
-    if "text/html" not in content_type:
-        print(f"Non-HTML content detected: {url}")
-        return "", [], []
-
-    soup = BeautifulSoup(response.content, "html.parser")
-
-    text_content = "\n".join([p.get_text() for p in soup.find_all("p")])
-
-    tables = []
-    for table in soup.find_all("table"):
-        rows = []
-        for tr in table.find_all("tr"):
-            cells = [cell.get_text(strip=True) for cell in tr.find_all(["th", "td"])]
-            rows.append(cells)
-        if rows:
-            markdown_table = tabulate(rows, headers="firstrow", tablefmt="github")
-            tables.append(markdown_table)
-
-    return text_content, tables
-
-def extract_pdfs(url):
-    response = requests.get(url)
-    content_type = response.headers.get("Content-Type", "")
-    if "text/html" not in content_type:
-        print(f"Skipping non-HTML page: {url}")
+        root = ET.fromstring(sitemap_content)
+        urls = [url.text for url in root.iter("{http://www.sitemaps.org/schemas/sitemap/0.9}loc")]
+        logger.info(f"Parsed sitemap file: {sitemap_file}")
+        return urls
+    except Exception as e:
+        logger.error(f"Error parsing sitemap file: {e}")
         return []
 
-    soup = BeautifulSoup(response.content, "html.parser")
+def extract_table_from_text(text):
+    rows = [row.strip() for row in text.split("\n") if row.strip()]
+    table_data = [re.split(r'\s{2,}', row) for row in rows]
 
-    pdf_links = []
-    for link in soup.find_all("a", href=True):
-        href = link["href"]
-        if href.endswith(".pdf"):
-            pdf_url = href if href.startswith("http") else url + href
-            pdf_links.append(pdf_url)
+    column_counts = [len(row) for row in table_data]
+    most_common_count = max(set(column_counts), key=column_counts.count) if column_counts else 0
+    table_data = [row for row in table_data if len(row) == most_common_count]
 
-    return pdf_links
+    if len(table_data) < 2:
+        logger.info("No valid tables found in text.")
+        return None
 
-def write_to_file(output_file, url, text_content, tables, pdf_links):
-    with open(output_file, "a") as file:
-        file.write(f"URL: {url}\n\n")
-        file.write("## Text Content:\n")
-        file.write(text_content + "\n\n")
+    logger.info("Extracted table from text.")
+    return tabulate(table_data, headers="firstrow", tablefmt="github")
 
-        if tables:
-            file.write("## Tables (Markdown):\n\n")
-            for table in tables:
-                file.write(table + "\n\n")
+def convert_pdf_to_markdown(pdf_url):
+    try:
+        response = requests.get(pdf_url)
+        response.raise_for_status()
 
-        if pdf_links:
-            file.write("## PDFs Converted to Markdown:\n\n")
-            for pdf in pdf_links:
-                file.write(f"- [PDF]({pdf})\n")
-                markdown_content = convert_pdf_to_markdown(pdf)
-                if markdown_content:
-                    file.write(markdown_content + "\n\n")
+        pdf_path = "temp.pdf"
+        with open(pdf_path, "wb") as file:
+            file.write(response.content)
 
-        file.write("\n" + "=" * 80 + "\n\n")
+        tables_markdown = extract_table_from_pdf(pdf_path)
+        pdf_doc = fitz.open(pdf_path)
+        markdown_content = ""
 
-def main():
-    sitemap_file = "sitemap_cleaned.xml"
-    output_file = "website_content.md"
+        for page_num in range(pdf_doc.page_count):
+            page = pdf_doc.load_page(page_num)
+            text = page.get_text("text")
+            markdown_content += f"## Page {page_num + 1}\n\n"
+
+            if tables_markdown:
+                for i, table in enumerate(tables_markdown, start=1):
+                    markdown_content += f"### Table {i}\n{table}\n\n"
+
+            markdown_content += text + "\n\n"
+
+        logger.info(f"Converted PDF to Markdown: {pdf_url}")
+        return markdown_content
+    except Exception as e:
+        logger.error(f"Error processing PDF from {pdf_url}: {e}")
+        return ""
+
+def scrape_page(url):
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.content, "html.parser")
+
+        text_content = "\n".join([p.get_text() for p in soup.find_all("p")])
+
+        tables = []
+        for table in soup.find_all("table"):
+            rows = []
+            for tr in table.find_all("tr"):
+                cells = [cell.get_text(strip=True) for cell in tr.find_all(["th", "td"])]
+                rows.append(cells)
+            if rows:
+                markdown_table = tabulate(rows, headers="firstrow", tablefmt="github")
+                tables.append(markdown_table)
+
+        logger.info(f"Scraped URL: {url}")
+        return text_content, tables
+    except Exception as e:
+        logger.error(f"Error scraping URL {url}: {e}")
+        return "", []
+
+def extract_pdfs(url):
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.content, "html.parser")
+        pdf_links = []
+
+        for link in soup.find_all("a", href=True):
+            href = link["href"]
+            if href.endswith(".pdf"):
+                pdf_url = href if href.startswith("http") else requests.compat.urljoin(url, href)
+                pdf_links.append(pdf_url)
+
+        logger.info(f"Extracted PDFs from URL: {url}")
+        return pdf_links
+    except Exception as e:
+        logger.error(f"Error extracting PDFs from {url}: {e}")
+        return []
+
+def extract_table_from_pdf(pdf_path):
+    try:
+        tables_markdown = []
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                tables = page.extract_tables()
+                for table in tables:
+                    if table:
+                        markdown_table = tabulate(table, headers="firstrow", tablefmt="github")
+                        tables_markdown.append(markdown_table)
+        logger.info(f"Extracted tables from PDF: {pdf_path}")
+        return tables_markdown
+    except Exception as e:
+        logger.error(f"Error extracting tables from PDF {pdf_path}: {e}")
+        return []
+
+def save_to_file(content, file_name="final_output.txt"):
+    try:
+        with open(file_name, "a", encoding="utf-8") as file:
+            file.write(content + "\n\n")
+        logger.info(f"Content saved to {file_name}")
+    except Exception as e:
+        logger.error(f"Error saving to file {file_name}: {e}")
+
+def process_url(url):
+    text_content, tables = scrape_page(url)
+
+    if text_content:
+        save_to_file(f"# Content from {url}\n\n{text_content}")
+
+    if tables:
+        for i, table in enumerate(tables, start=1):
+            save_to_file(f"# Table {i} from {url}\n\n{table}")
+
+    pdf_links = extract_pdfs(url)
+    if pdf_links:
+        logger.info(f"Found {len(pdf_links)} PDFs on {url}. Processing...")
+
+        for pdf_url in pdf_links:
+            logger.info(f"Processing PDF: {pdf_url}")
+            markdown_content = convert_pdf_to_markdown(pdf_url)
+            if markdown_content:
+                save_to_file(f"# Content from PDF: {pdf_url}\n\n{markdown_content}")
+            else:
+                logger.warning(f"Failed to extract Markdown from PDF: {pdf_url}")
+
+def main(sitemap_file):
+    logger.info("Starting scraping process...")
 
     urls = parse_sitemap(sitemap_file)
+    if not urls:
+        logger.error("No URLs found in sitemap. Exiting...")
+        return
 
-    for url in urls:
-        print(f"Scraping {url}...")
-        try:
-            text_content, tables = scrape_page(url)
-            pdf_links = extract_pdfs(url)
-            write_to_file(output_file, url, text_content, tables, pdf_links)
-        except Exception as e:
-            print(f"Error processing {url}: {e}")
+    total_urls = len(urls)
+    logger.info(f"Found {total_urls} URLs in the sitemap.")
 
-    print(f"All content saved to {output_file}")
+    with ThreadPoolExecutor(max_workers=10) as executor:  # Adjust workers as needed
+        executor.map(process_url, urls)
+
+    logger.info("Scraping process completed.")
 
 if __name__ == "__main__":
-    main()
+    sitemap_file = "sitemap_cleaned.xml"
+    main(sitemap_file)
